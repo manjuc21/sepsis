@@ -67,24 +67,37 @@ def train_lstm(
     model_config: ModelConfig, train: pd.DataFrame, val: pd.DataFrame
 ) -> dict:
     max_len = model_config.extra.get("max_len", config.MAX_SEQUENCE_LENGTH)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"train_lstm: using device={device}")
 
     X_train, y_train, mask_train, _ = features.build_sequence_tensors(train, max_len)
     X_val, y_val, mask_val, val_patient_ids = features.build_sequence_tensors(val, max_len)
 
     n_features = X_train.shape[-1]
+    # Lengths must stay on CPU — pack_padded_sequence requires it regardless
+    # of where the model/data live (see SepsisLSTM.forward's own .cpu() call).
     lengths_train = mask_train.sum(dim=1)
     lengths_val = mask_val.sum(dim=1)
 
     torch.manual_seed(config.RANDOM_SEED)
-    model = SepsisLSTM(n_features=n_features)
+    model = SepsisLSTM(n_features=n_features).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LSTM_LEARNING_RATE)
 
     n_pos = y_train[mask_train].sum()
     n_neg = mask_train.sum() - n_pos
-    pos_weight = (n_neg / n_pos.clamp(min=1)).clamp(max=100.0)
+    pos_weight = (n_neg / n_pos.clamp(min=1)).clamp(max=100.0).to(device)
 
+    # Dataset/loader stay on CPU (X_train alone is ~1GB at full dataset
+    # scale); only each mini-batch is moved to device, keeping GPU memory
+    # bounded regardless of dataset size.
     train_ds = TensorDataset(X_train, y_train, mask_train, lengths_train)
     train_loader = DataLoader(train_ds, batch_size=config.LSTM_BATCH_SIZE, shuffle=True)
+
+    # Val set is used whole (unbatched) every epoch for early stopping, so
+    # move it to device once up front rather than per-epoch.
+    X_val_dev = X_val.to(device)
+    y_val_dev = y_val.to(device)
+    mask_val_dev = mask_val.to(device)
 
     best_val_loss = float("inf")
     best_state = None
@@ -94,6 +107,7 @@ def train_lstm(
     for epoch in range(config.LSTM_MAX_EPOCHS):
         model.train()
         for xb, yb, mb, lb in train_loader:
+            xb, yb, mb = xb.to(device), yb.to(device), mb.to(device)
             optimizer.zero_grad()
             logits = model(xb, lb)
             loss = masked_bce_loss(logits, yb, mb, pos_weight)
@@ -102,8 +116,8 @@ def train_lstm(
 
         model.eval()
         with torch.no_grad():
-            val_logits = model(X_val, lengths_val)
-            val_loss = masked_bce_loss(val_logits, y_val, mask_val, pos_weight).item()
+            val_logits = model(X_val_dev, lengths_val)
+            val_loss = masked_bce_loss(val_logits, y_val_dev, mask_val_dev, pos_weight).item()
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -120,8 +134,8 @@ def train_lstm(
 
     model.eval()
     with torch.no_grad():
-        val_logits = model(X_val, lengths_val)
-        val_prob = torch.sigmoid(val_logits).numpy()
+        val_logits = model(X_val_dev, lengths_val)
+        val_prob = torch.sigmoid(val_logits).cpu().numpy()
 
     rows = []
     for i, pid in enumerate(val_patient_ids):
@@ -141,8 +155,13 @@ def train_lstm(
         model_config.artifact_path,
     )
 
-    del X_train, X_val, y_train, y_val, mask_train, mask_val, train_ds, train_loader
+    del (
+        X_train, X_val, y_train, y_val, mask_train, mask_val, train_ds, train_loader,
+        X_val_dev, y_val_dev, mask_val_dev,
+    )
     gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     return {
         "model_name": model_config.name,

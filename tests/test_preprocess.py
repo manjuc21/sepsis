@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src import config
@@ -73,4 +74,21 @@ def test_imputation_fit_on_train_only(synthetic_patients):
     assert train[feature_cols].isna().sum().sum() == 0
     assert val[feature_cols].isna().sum().sum() == 0
     assert test[feature_cols].isna().sum().sum() == 0
-    assert set(medians.keys()) == set(feature_cols)
+    expected_cols = set(feature_cols) | set(config.DEMOGRAPHIC_IMPUTE_COLUMNS)
+    assert set(medians.keys()) == expected_cols
+
+
+def test_demographic_gaps_imputed_from_train_stats(synthetic_patients):
+    # Mirrors a real PhysioNet quirk: Unit1/Unit2/HospAdmTime are entirely
+    # missing for some patients (hospital system B never populates them),
+    # not just a stray reading like vitals/labs.
+    df = synthetic_patients.copy()
+    some_patient = df["patient_id"].unique()[0]
+    df.loc[df["patient_id"] == some_patient, config.DEMOGRAPHIC_IMPUTE_COLUMNS] = np.nan
+
+    train, val, test, medians = preprocess.preprocess(df)
+
+    demo_cols = config.DEMOGRAPHIC_IMPUTE_COLUMNS
+    assert train[demo_cols].isna().sum().sum() == 0
+    assert val[demo_cols].isna().sum().sum() == 0
+    assert test[demo_cols].isna().sum().sum() == 0

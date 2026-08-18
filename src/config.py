@@ -39,6 +39,11 @@ LAB_COLUMNS: list[str] = [
 DEMOGRAPHIC_COLUMNS: list[str] = [
     "Age", "Gender", "Unit1", "Unit2", "HospAdmTime", "ICULOS",
 ]
+# Demographic columns that PhysioNet leaves genuinely missing for some
+# patients (e.g. hospital system B never populates Unit1/Unit2). These need
+# the same train-fit imputation as vitals/labs, or downstream consumers that
+# reject NaNs (e.g. features.build_sequence_tensors) fail outright.
+DEMOGRAPHIC_IMPUTE_COLUMNS: list[str] = ["Unit1", "Unit2", "HospAdmTime"]
 LABEL_COLUMN: str = "SepsisLabel"
 FEATURE_COLUMNS: list[str] = VITAL_COLUMNS + LAB_COLUMNS + DEMOGRAPHIC_COLUMNS
 

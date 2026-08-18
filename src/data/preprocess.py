@@ -100,7 +100,12 @@ def preprocess(
 
     train, val, test = patient_level_split(df)
 
+    # Vitals/labs get within-patient ffill above; demographic columns like
+    # Unit1/Unit2 are admission-level constants with no earlier value to
+    # forward-fill from, so they go straight to train-fit median imputation
+    # alongside the vitals/labs gaps.
+    impute_cols = feature_cols + config.DEMOGRAPHIC_IMPUTE_COLUMNS
     train, val, test, medians = impute_remaining_with_train_stats(
-        train, val, test, feature_cols
+        train, val, test, impute_cols
     )
     return train, val, test, medians
