@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sepsis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sepsis}
+      POSTGRES_DB: ${POSTGRES_DB:-sepsis}
+    ports:
+      - "5432:5432"
+    volumes:
+      - sepsis_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sepsis}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sepsis}:${POSTGRES_PASSWORD:-sepsis}@db:5432/${POSTGRES_DB:-sepsis}
+      API_PORT: 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      # trained model artifacts and demo data live outside the image so a new
+      # training run doesn't require a rebuild — see scripts/run_pipeline.py
+      - ./models:/app/models:ro
+      - ./data/processed:/app/data/processed:ro
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+
+volumes:
+  sepsis_pg_data:
